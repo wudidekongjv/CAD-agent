@@ -235,7 +235,7 @@
               </div>
             </div>
             <div class="setting-note">
-              图纸几何原文不发送到 API，仅结构摘要（图层名/实体统计）参与推理。切换模型需管理员权限。
+              图纸几何原文不发送到 API，仅结构摘要（图层名/实体统计）参与推理。切换立即生效。
             </div>
           </div>
 
@@ -475,9 +475,12 @@ async function uploadKnowledge() {
 }
 async function deleteTask(t) {
   if (!confirm('删除这条任务记录？')) return
-  // 前端移除（后端列表不含删除接口时保持数据一致）
-  history.value = history.value.filter(x => x.task_id !== t.task_id)
-  filterHistory()
+  try {
+    await api(`/api/tasks/${t.task_id}`, { method: 'DELETE' })
+    history.value = history.value.filter(x => x.task_id !== t.task_id)
+    if (currentTask.value && currentTask.value.task_id === t.task_id) newRender()
+    filterHistory()
+  } catch (e) { alert('删除失败：' + e.message) }
 }
 
 onMounted(init)

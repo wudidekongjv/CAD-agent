@@ -14,7 +14,8 @@ services:
     environment:
       - CADAGENT_HOME=/app/cadagent_data
       - CADAGENT_LAN=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-      - VLLM_ENDPOINT=http://vllm:8000/v1/chat/completions
+      - SWARM_LLM_URL=http://127.0.0.1:11434/v1
+      - SWARM_LLM_MODEL=qwen3-32b
       - PYTHONPATH=/app/src
     depends_on:
       - vllm

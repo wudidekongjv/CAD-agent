@@ -314,31 +314,60 @@ async def _run_graph(task_id: str, req: DeepenReq, user: Dict, drawing_path: str
         except Exception as e:
             progress("warning", f"图纸信息读取失败: {e}")
 
-        progress("planner", "正在规划，Agent 将通过 handoff 动态协作…")
+        progress("planner", "正在规划，LangGraph Agent 将通过 handoff 动态协作…")
 
-        # Swarm 运行时（本地离线 LLM + handoff 路由）
-        from swarm.agents import run_swarm
+        # LangGraph Swarm：Command(goto) 实现 Agent 自主移交
+        from swarm.graph import run_swarm
+        from swarm.llm import get_llm, available_providers
 
-        def cb(stage_name, msg):
-            PROGRESS[task_id].append({"stage": stage_name, "msg": msg, "ts": now_str()})
+        llm_info = get_llm().describe()
+        progress("system", f"使用模型: {llm_info['model']} ({llm_info['mode']})")
 
-        # 同步 Swarm 放到线程池，避免阻塞事件循环
-        swarm_result = await asyncio.to_thread(
-            run_swarm,
-            req.request, drawing_path, output_path, backend_mode, cb,
-        )
-
-        status = swarm_result.get("status", "unknown")
-        stage = "done" if status == "success" and not swarm_result.get("error") else "failed"
-        progress("validator", f"校验完成，经过 {len(swarm_result.get('handoffs', []))} 次 Agent 移交")
-
-        validation = {
-            "passed": stage == "done",
-            "errors": [swarm_result["error"]] if swarm_result.get("error") else [],
-            "handoffs": swarm_result.get("handoffs", []),
-            "turns": swarm_result.get("turns", 0),
-            "agent_reached": swarm_result.get("agent_reached", ""),
+        # 只发送图纸结构摘要给模型，几何原文不出网
+        drawing_summary = {
+            "layers": list(drawing_info.get("layers", {}).keys())[:30],
+            "entity_counts": drawing_info.get("entity_counts", {}),
+            "total_entities": drawing_info.get("total_entities", 0),
         }
+
+        # 生成 handoff 工具 schema（供 Agent 决策移交）
+        handoff_tools = [
+            {"type": "function", "function": {
+                "name": f"transfer_to_{n}",
+                "description": f"Transfer control to {n} agent",
+                "parameters": {"type": "object", "properties": {}}}}
+            for n in ["Coder", "Executor", "Validator", "Deliver", "Reviewer", "Planner"]
+        ]
+
+        temp_output = str(OUTPUT_ROOT / user["role"] / user["user_id"] / task_id / "draft.dxf")
+        Path(temp_output).parent.mkdir(parents=True, exist_ok=True)
+
+        initial_state = {
+            "user_request": req.request,
+            "drawing_path": drawing_path,
+            "drawing_summary": drawing_summary,
+            "temp_output": temp_output,
+            "output_path": output_path,
+            "backend": backend_mode,
+            "handoff_tools": handoff_tools,
+            "handoff_count": 0,
+            "max_handoffs": req.max_retries,
+            "messages": [],
+        }
+
+        # 同步图执行放线程池
+        final_state = await asyncio.to_thread(run_swarm, initial_state, task_id)
+
+        stage = "done" if final_state.get("current_agent") == "deliver" else "failed"
+        validation = final_state.get("validation", {})
+        validation.update({
+            "handoffs": final_state.get("handoff_count", 0),
+            "messages": final_state.get("messages", []),
+            "knowledge_refs": final_state.get("knowledge_refs", []),
+            "model": llm_info["model"],
+        })
+
+        progress("validator", f"校验完成，共 {final_state.get('handoff_count', 0)} 次 Agent 移交")
 
         with db_conn() as conn:
             conn.execute("""
@@ -347,8 +376,8 @@ async def _run_graph(task_id: str, req: DeepenReq, user: Dict, drawing_path: str
             """, (
                 stage,
                 json.dumps(validation, ensure_ascii=False),
-                json.dumps(swarm_result.get("progress", []), ensure_ascii=False),
-                swarm_result.get("error", ""), now_str(), task_id,
+                json.dumps(final_state.get("messages", []), ensure_ascii=False),
+                final_state.get("error", ""), now_str(), task_id,
             ))
 
         PROGRESS[task_id].append({"stage": "done", "msg": "深化完成", "ts": now_str()})
@@ -429,6 +458,111 @@ async def get_file(relative_path: str, user=Depends(identity)):
     if not full or not full.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(full)
+
+
+# ============ 知识库接口 ============
+
+@app.get("/api/knowledge/stats")
+async def knowledge_stats(user=Depends(identity)):
+    """知识库统计"""
+    from knowledge import stats, list_sources
+    return {**stats(), "sources_list": list_sources()}
+
+
+@app.get("/api/knowledge/search")
+async def knowledge_search(q: str, top_k: int = 5, user=Depends(identity)):
+    """检索规范（混合检索）"""
+    from knowledge import retrieve_standards
+    return {"query": q, "results": retrieve_standards(q, top_k)}
+
+
+@app.post("/api/knowledge/ingest")
+async def knowledge_ingest(file: UploadFile = File(...), user=Depends(identity)):
+    """上传规范文档入库"""
+    from knowledge import ingest_document
+
+    kb_dir = BASE_DIR / "knowledge" / "docs"
+    kb_dir.mkdir(parents=True, exist_ok=True)
+    path = kb_dir / file.filename
+    path.write_bytes(await file.read())
+    result = ingest_document(str(path), file.filename)
+    return result
+
+
+@app.post("/api/knowledge/reset")
+async def knowledge_reset(user=Depends(identity)):
+    """重建内置规范"""
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    from knowledge import reset_knowledge
+    reset_knowledge()
+    return {"success": True, "message": "知识库已重建"}
+
+
+# ============ 模型配置接口 ============
+
+@app.get("/api/models/providers")
+async def model_providers(user=Depends(identity)):
+    """列出可用模型供应商"""
+    from swarm.llm import available_providers, get_llm
+    return {
+        "providers": available_providers(),
+        "current": get_llm().describe(),
+    }
+
+
+@app.post("/api/models/switch")
+async def model_switch(provider: str = Form(...), user=Depends(identity)):
+    """切换模型供应商"""
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    from swarm.llm import set_provider
+    try:
+        client = set_provider(provider)
+        return {"success": True, **client.describe()}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============ Agent 团队状态 ============
+
+@app.get("/api/agents")
+async def agent_team(user=Depends(identity)):
+    """Agent 团队定义与状态"""
+    return {
+        "topology": "LangGraph Swarm (Command + goto handoff)",
+        "agents": [
+            {"name": "Planner", "role": "需求理解与规范检索", "can_handoff_to": ["Coder", "Reviewer"]},
+            {"name": "Coder", "role": "生成 MCP 工具调用参数", "can_handoff_to": ["Executor", "Planner"]},
+            {"name": "Executor", "role": "临时副本执行绘图", "can_handoff_to": ["Validator", "Coder", "Planner"]},
+            {"name": "Validator", "role": "知识库规范校验", "can_handoff_to": ["Deliver", "Coder", "Planner", "Reviewer"]},
+            {"name": "Reviewer", "role": "人工复核协调", "can_handoff_to": ["Planner", "Deliver"]},
+            {"name": "Deliver", "role": "汇总交付", "can_handoff_to": []},
+        ],
+    }
+
+
+@app.get("/api/tools/detail")
+async def tools_detail(user=Depends(identity)):
+    """工具详细说明（工具面板）"""
+    return {
+        "core": [
+            {"name": "drawing_info", "desc": "读取图层与实体统计", "params": ["file", "backend"]},
+            {"name": "cad_batch", "desc": "批量执行绘图操作", "params": ["ops", "file", "output", "backend"]},
+            {"name": "undo_checkpoint", "desc": "回滚检查点", "params": ["file"]},
+        ],
+        "arch": [
+            {"name": "draw_wall", "desc": "绘制墙体", "params": ["start", "end", "thickness", "layer"]},
+            {"name": "insert_opening", "desc": "插入门窗", "params": ["name", "insert", "width", "height"]},
+            {"name": "batch_dimension", "desc": "批量标注", "params": ["layer", "style"]},
+            {"name": "layer_audit", "desc": "图层规范检查", "params": ["file", "naming_rules"]},
+            {"name": "room_boundary", "desc": "房间边界识别", "params": ["file", "layer"]},
+        ],
+        "mech": [
+            {"name": "add_hatch", "desc": "剖面填充", "params": ["points", "pattern"]},
+            {"name": "offset_copy", "desc": "偏移复制", "params": ["filter", "distance"]},
+        ],
+    }
 
 
 if __name__ == "__main__":

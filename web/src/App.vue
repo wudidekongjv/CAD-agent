@@ -7,7 +7,7 @@
     <nav class="dock glass">
       <button v-for="n in navItems" :key="n.key" class="dock-btn"
               :class="{ active: panel === n.key }" @click="panel = n.key" :title="n.label">
-        <span v-html="n.icon"></span>
+        <span class="dock-glyph">{{ n.glyph }}</span>
       </button>
       <div class="dock-spacer"></div>
       <div class="dock-avatar" @click="panel = 'settings'" title="设置">
@@ -271,8 +271,8 @@
           <div class="file-mini" v-if="file"><span>{{ file.name }}</span><button @click="file = null">×</button></div>
           <textarea v-model="input" rows="1" class="cmd-input"
                     placeholder="描述深化需求，如：把 WALL 图层墙线改为 200 厚并批量标注…"
-                    :disabled="!serverOk" @keydown.enter.exact.prevent="submit"></textarea>
-          <button class="send-btn" :disabled="!serverOk || (!input.trim() || !file)" @click="submit">➤</button>
+                    @keydown.enter.exact.prevent="submit"></textarea>
+          <button class="send-btn" :disabled="(!input.trim() || !file)" @click="submit">➤</button>
         </div>
         <div class="control-hint">Enter 发送 · 图纸不出网 · 支持 DXF / DWG</div>
       </template>
@@ -348,13 +348,14 @@ const icons = {
   layers: '<svg viewBox="0 0 24 24" width="30" height="30"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M12 2 2 7l10 5 10-5zM2 12l10 5 10-5M2 17l10 5 10-5"/></svg>',
 }
 
+// 用 Unicode 几何符号作为图标（避免 v-html + scoped 样式导致 SVG 丢失）
 const navItems = [
-  { key: 'home', label: '工作台', icon: '<svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>' },
-  { key: 'tasks', label: '任务', icon: '<svg viewBox="0 0 24 24"><path d="M9 5h10v2H9zm0 6h10v2H9zm0 6h10v2H9zM4 5h3v3H4zm0 6h3v3H4zm0 6h3v3H4z"/></svg>' },
-  { key: 'agents', label: 'Agent 团队', icon: '<svg viewBox="0 0 24 24"><path d="M12 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8M6 14a6 6 0 0 1 12 0v1H6zm-4 4a2 2 0 0 1 2-2h2v5H4a2 2 0 0 1-2-2zm16-2h2a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2h-2z"/></svg>' },
-  { key: 'tools', label: 'MCP 工具', icon: '<svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.6 7.6l-6.9 6.9a2 2 0 0 1-2.8-2.8l6.9-6.9a6 6 0 0 1 7.6-7.6z"/></svg>' },
-  { key: 'knowledge', label: '知识库', icon: '<svg viewBox="0 0 24 24"><path d="M4 3h7a3 3 0 0 1 3 3v15a3 3 0 0 0-3-3H4zM20 3h-3a3 3 0 0 0-3 3v15a3 3 0 0 1 3-3h3z"/></svg>' },
-  { key: 'settings', label: '设置', icon: '<svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8m9 4a9 9 0 0 0-.2-1.8l2-1.5-2-3.4-2.4 1a9 9 0 0 0-3.1-1.8L14.8 2h-4l-.5 2.5a9 9 0 0 0-3.1 1.8l-2.4-1-2 3.4 2 1.5a9 9 0 0 0 0 3.6l-2 1.5 2 3.4 2.4-1a9 9 0 0 0 3.1 1.8l.5 2.5h4l.5-2.5a9 9 0 0 0 3.1-1.8l2.4 1 2-3.4-2-1.5A9 9 0 0 0 21 12"/></svg>' },
+  { key: 'home', label: '工作台', glyph: '⌂' },
+  { key: 'tasks', label: '任务', glyph: '☰' },
+  { key: 'agents', label: 'Agent 团队', glyph: '◆' },
+  { key: 'tools', label: 'MCP 工具', glyph: '⚒' },
+  { key: 'knowledge', label: '知识库', glyph: '▤' },
+  { key: 'settings', label: '设置', glyph: '⚙' },
 ]
 
 const panelTitle = computed(() => navItems.find(n => n.key === panel.value)?.label || '工作台')
@@ -589,9 +590,9 @@ function scroll() { if (stageBody.value) stageBody.value.scrollTop = stageBody.v
   width: 66px; padding: 12px 8px; border-radius: var(--r-pill); display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .dock-btn { width: 46px; height: 46px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center;
   background: transparent; transition: all 0.2s; }
-.dock-btn svg { width: 21px; height: 21px; fill: rgba(255,255,255,0.62); }
+.dock-glyph { font-size: 22px; line-height: 1; color: rgba(255,255,255,0.68); }
 .dock-btn:hover, .dock-btn.active { background: rgba(255,255,255,0.16); }
-.dock-btn.active svg { fill: #fff; }
+.dock-btn.active .dock-glyph { color: #fff; }
 .dock-spacer { height: 12px; }
 .dock-avatar { width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg,#3b82f6,#1d4ed8);
   display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 700; cursor: pointer; }

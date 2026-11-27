@@ -314,27 +314,31 @@ async def _run_graph(task_id: str, req: DeepenReq, user: Dict, drawing_path: str
         except Exception as e:
             progress("warning", f"图纸信息读取失败: {e}")
 
-        progress("planner", "正在生成操作计划…")
-        await asyncio.sleep(0.5)  # 模拟 LLM 延迟，生产环境为真实调用
+        progress("planner", "正在规划，Agent 将通过 handoff 动态协作…")
 
-        from agent.graph import run_task
-        initial_state = {
-            "user_request": req.request,
-            "drawing_path": drawing_path,
-            "output_path": output_path,
-            "device_id": user["device_id"],
-            "task_id": task_id,
-            "drawing_info": drawing_info,
-            "retry_count": 0,
-            "max_retries": req.max_retries,
-            "backend": backend_mode,
-            "messages": [],
+        # Swarm 运行时（本地离线 LLM + handoff 路由）
+        from swarm.agents import run_swarm
+
+        def cb(stage_name, msg):
+            PROGRESS[task_id].append({"stage": stage_name, "msg": msg, "ts": now_str()})
+
+        # 同步 Swarm 放到线程池，避免阻塞事件循环
+        swarm_result = await asyncio.to_thread(
+            run_swarm,
+            req.request, drawing_path, output_path, backend_mode, cb,
+        )
+
+        status = swarm_result.get("status", "unknown")
+        stage = "done" if status == "success" and not swarm_result.get("error") else "failed"
+        progress("validator", f"校验完成，经过 {len(swarm_result.get('handoffs', []))} 次 Agent 移交")
+
+        validation = {
+            "passed": stage == "done",
+            "errors": [swarm_result["error"]] if swarm_result.get("error") else [],
+            "handoffs": swarm_result.get("handoffs", []),
+            "turns": swarm_result.get("turns", 0),
+            "agent_reached": swarm_result.get("agent_reached", ""),
         }
-        final_state = run_task(initial_state, thread_id=task_id)
-
-        stage = final_state.get("stage", "unknown")
-        progress("executor", f"执行完成，状态: {stage}")
-        progress("validator", "校验完成")
 
         with db_conn() as conn:
             conn.execute("""
@@ -342,9 +346,9 @@ async def _run_graph(task_id: str, req: DeepenReq, user: Dict, drawing_path: str
                 WHERE task_id=?
             """, (
                 stage,
-                json.dumps(final_state.get("validation", {}), ensure_ascii=False),
-                json.dumps(final_state.get("messages", []), ensure_ascii=False),
-                final_state.get("error", ""), now_str(), task_id,
+                json.dumps(validation, ensure_ascii=False),
+                json.dumps(swarm_result.get("progress", []), ensure_ascii=False),
+                swarm_result.get("error", ""), now_str(), task_id,
             ))
 
         PROGRESS[task_id].append({"stage": "done", "msg": "深化完成", "ts": now_str()})

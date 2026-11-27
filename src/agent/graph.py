@@ -183,7 +183,7 @@ def executor_node(state: CADState) -> CADState:
     shutil.copy(source, temp_output)
 
     try:
-        from mcp.cad_mcp_server import cad_batch
+        from cad_tools import cad_batch
 
         result = cad_batch(
             ops=state.get("generated_ops", []),
@@ -227,7 +227,7 @@ def validator_node(state: CADState) -> CADState:
 
     # 规则校验 3：图层规范
     try:
-        from mcp.cad_mcp_server import layer_audit
+        from cad_tools import layer_audit
         audit = layer_audit(state.get("final_output", ""))
         if not audit.get("passed", False):
             errors.append(f"图层规范问题: {audit.get('violations', [])[:3]}")

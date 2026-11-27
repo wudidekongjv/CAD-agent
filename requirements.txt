@@ -1,0 +1,23 @@
+# Web / API
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.6.0
+python-multipart>=0.0.9
+requests>=2.31.0
+
+# Agent 编排
+langgraph>=0.0.60
+langchain-core>=0.2.0
+
+# MCP 协议
+mcp>=1.0.0
+
+# CAD 引擎
+ezdxf>=1.1.0
+# pywin32>=306 ; sys_platform == "win32"   # AutoCAD COM 在线模式（Windows）
+
+# 数据存储
+redis>=5.0.0
+
+# 工具
+python-dotenv>=1.0.0

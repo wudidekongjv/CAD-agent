@@ -37,14 +37,18 @@ class SwarmConfig:
     tool_timeout: int = 120
 
     def validate_endpoint(self, url: str) -> None:
-        """拒绝非本地 LLM 端点（隐私门）"""
+        """本地模式下的隐私门：拒绝非本地端点。
+
+        API 模式由用户在 LLMClient 中显式选择，不经过此检查。
+        无论哪种模式，图纸原文（坐标/几何）都不发送给模型。
+        """
         if self.allow_cloud:
             return
         local_markers = ("127.0.0.1", "localhost", "::1", "0.0.0.0")
         if not any(m in url for m in local_markers):
             raise PermissionError(
-                f"Privacy gate: non-local LLM endpoint blocked ({url}). "
-                "Set allow_cloud=True explicitly to override."
+                f"Local-mode privacy gate: non-local endpoint blocked ({url}). "
+                "Use API mode explicitly if cloud inference is intended."
             )
 
     def check_kill_switch(self) -> None:

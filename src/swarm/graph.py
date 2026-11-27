@@ -20,13 +20,18 @@ from .state import SwarmState
 from .llm import get_llm
 
 
-def _llm_decide(system: str, user: str, tools: Optional[List[Dict]] = None) -> Dict:
-    """调用 LLM 获取决策（工具调用或最终答案）"""
-    llm = get_llm()
-    return llm.chat([
+def _llm_decide(system: str, user: str, tools: Optional[List[Dict]] = None,
+                fallback: Optional[Any] = None) -> Dict:
+    """调用 LLM 获取决策（带模型降级）"""
+    messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
-    ], tools=tools)
+    ]
+    if fallback:
+        response, provider = fallback.call(messages, tools)
+        return response
+    llm = get_llm()
+    return llm.chat(messages, tools=tools)
 
 
 def _extract_decision(response: Dict) -> tuple:
@@ -42,12 +47,33 @@ def _extract_decision(response: Dict) -> tuple:
 # ============ Agent 节点 ============
 
 def planner_node(state: SwarmState) -> Command:
-    """Planner：理解需求 + 读知识库规范 → 输出计划"""
+    """Planner：理解需求 + 读知识库规范 + 细粒度元数据 → 输出计划"""
     from knowledge import retrieve_standards
+    from backend.metadata import extract_metadata
+    from swarm.guard import ModelFallback, LoopGuard
+
+    # 防死循环检查
+    guard = state.get("loop_guard") or LoopGuard()
+    state["loop_guard"] = guard
+
+    # 提取细粒度元数据（本地完整，含实体句柄与几何）
+    try:
+        meta = extract_metadata(state["drawing_path"], detail="full")
+        state["drawing_metadata"] = meta
+        # 整体性摘要（发 API 用脱敏版）
+        state["drawing_summary"] = extract_metadata(
+            state["drawing_path"], detail="summary"
+        )["overview"]
+    except Exception as e:
+        state["drawing_summary"] = {"error": str(e)}
 
     # 从知识库检索相关规范（这是规范校验的依据）
     standards = retrieve_standards(state["user_request"], top_k=5)
     state["knowledge_refs"] = [s["source"] for s in standards]
+
+    # 模型降级链调用
+    fallback = state.get("model_fallback") or ModelFallback()
+    state["model_fallback"] = fallback
 
     system = """你是建筑 CAD 施工图深化的 Planner。
 基于用户需求与检索到的制图规范，制定操作计划。
@@ -66,7 +92,7 @@ insert_block / add_dimension / delete_entities / offset / hatch
         "standards": standards,
     }
     response = _llm_decide(system, json.dumps(context, ensure_ascii=False),
-                           tools=state.get("handoff_tools"))
+                           tools=state.get("handoff_tools"), fallback=state.get("model_fallback"))
     target, content, _ = _extract_decision(response)
 
     state["plan"] = content
@@ -138,12 +164,42 @@ def executor_node(state: SwarmState) -> Command:
 
 
 def validator_node(state: SwarmState) -> Command:
-    """Validator：规则校验 + 知识库规范比对"""
+    """Validator：规则校验 + 知识库规范比对 + 元数据前后对比"""
     from knowledge import retrieve_standards, validate_against_standards
+    from backend.metadata import extract_metadata
+    from swarm.guard import DataValidator, LoopGuard
 
     # 基于知识库规范校验
     standards = retrieve_standards("图层命名 标注样式 制图规范", top_k=8)
     validation = validate_against_standards(state["temp_output"], standards)
+
+    # 元数据前后对比（细粒度：实体级增删改）
+    try:
+        before = state.get("drawing_metadata") or extract_metadata(state["drawing_path"], "full")
+        after = extract_metadata(state["temp_output"], "full")
+        expected_ops = state.get("generated_ops", "")
+        try:
+            import json as _json
+            ops = _json.loads(expected_ops) if isinstance(expected_ops, str) and expected_ops.strip().startswith("[") else []
+        except Exception:
+            ops = []
+        diff_check = DataValidator().validate_result(before, after, ops)
+        validation["metadata_diff"] = diff_check.get("diff", {})
+        if not diff_check.get("passed"):
+            validation["errors"].extend([
+                {"rule": "元数据校验", "detail": e} for e in diff_check.get("errors", [])
+            ])
+            validation["passed"] = False
+    except Exception as e:
+        validation.setdefault("errors", []).append({"rule": "元数据校验", "detail": str(e)})
+
+    # 防死循环检查
+    guard = state.get("loop_guard") or LoopGuard()
+    ok, reason = guard.check_handoff("validator", state)
+    if not ok:
+        validation["passed"] = False
+        validation.setdefault("errors", []).append({"rule": "循环保护", "detail": reason})
+
     state["validation"] = validation
 
     # 语义校验（API 模型更强）
@@ -158,7 +214,7 @@ def validator_node(state: SwarmState) -> Command:
         "user_request": state["user_request"],
         "validation": validation,
         "exec_result": state.get("exec_result", {}),
-    }, ensure_ascii=False), tools=state.get("handoff_tools"))
+    }, ensure_ascii=False), tools=state.get("handoff_tools"), fallback=state.get("model_fallback"))
     target, content, _ = _extract_decision(response)
 
     state["current_agent"] = "validator"

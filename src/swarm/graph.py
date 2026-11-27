@@ -22,16 +22,35 @@ from .llm import get_llm
 
 def _llm_decide(system: str, user: str, tools: Optional[List[Dict]] = None,
                 fallback: Optional[Any] = None) -> Dict:
-    """调用 LLM 获取决策（带模型降级）"""
+    """调用 LLM 获取决策（带模型降级 + 规则引擎兜底）
+
+    降级链：API模型 → 备用API → 规则引擎（确定性，无需网络）
+    """
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    if fallback:
-        response, provider = fallback.call(messages, tools)
-        return response
-    llm = get_llm()
-    return llm.chat(messages, tools=tools)
+    try:
+        if fallback:
+            response, provider = fallback.call(messages, tools)
+            return response
+        llm = get_llm()
+        return llm.chat(messages, tools=tools)
+    except Exception as e:
+        # 所有 LLM 不可用 → 规则引擎兜底（返回带 tool_calls 结构的响应）
+        from .rule_engine import rule_based_plan
+
+        content = rule_based_plan(system, user)
+        return {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": [{
+                "id": "rule_fallback",
+                "function": {"name": "transfer_to_coder", "arguments": "{}"},
+            }],
+            "_degraded": True,
+            "_error": str(e)[:200],
+        }
 
 
 def _extract_decision(response: Dict) -> tuple:
@@ -113,6 +132,25 @@ def coder_node(state: SwarmState) -> Command:
 检查参数完整性，不确定尺寸时从图纸摘要推断。
 完成后调用 transfer_to_Executor。
 """
+    # 若 plan 已是合法 ops JSON（规则引擎降级产出），直接透传，不再让 LLM 重新解析
+    plan_raw = state.get("plan", "")
+    direct_ops = None
+    try:
+        parsed = json.loads(plan_raw) if isinstance(plan_raw, str) else plan_raw
+        if isinstance(parsed, list) and all(isinstance(x, dict) and "op" in x for x in parsed):
+            direct_ops = parsed
+    except Exception:
+        pass
+
+    if direct_ops is not None:
+        # 规则引擎已产出确定性 ops
+        ops_json = json.dumps(direct_ops, ensure_ascii=False)
+        state["generated_ops"] = ops_json
+        state["current_agent"] = "coder"
+        state["messages"].append({"agent": "Coder", "content": f"规则引擎产出 {len(direct_ops)} 个操作"})
+        state["handoff_count"] += 1
+        return Command(goto="executor", update=state)
+
     response = _llm_decide(system, f"计划:\n{state.get('plan', '')}\n\n图纸摘要:\n{json.dumps(state.get('drawing_summary', {}), ensure_ascii=False)}",
                            tools=state.get("handoff_tools"))
     target, content, _ = _extract_decision(response)
@@ -128,39 +166,50 @@ def coder_node(state: SwarmState) -> Command:
 
 
 def executor_node(state: SwarmState) -> Command:
-    """Executor：在临时副本执行"""
-    from mcp.cad_mcp_server import cad_batch
+    """Executor：在临时副本执行
 
-    system = """你是 CAD 执行 Agent。
-调用 cad_batch 在临时副本执行操作。
-执行失败时：
-- 参数问题 → transfer_to_Coder
-- 需求理解问题 → transfer_to_Planner
-- 成功 → transfer_to_Validator
-"""
-    response = _llm_decide(system, f"操作:\n{state.get('generated_ops', '')}",
-                           tools=state.get("handoff_tools"))
-    target, content, _ = _extract_decision(response)
+    确定性执行 generated_ops（不让 LLM 重新生成——那是 Coder 的职责）。
+    LLM 仅在失败时用于归因，且降级为规则判断。
+    """
+    from cad_tools import cad_batch
 
-    # 实际执行（结构化 ops 从 LLM 输出解析）
+    # 直接解析 Coder 产出的 ops
+    ops_raw = state.get("generated_ops", "")
     try:
-        ops = json.loads(content) if content.strip().startswith("[") else []
+        ops = json.loads(ops_raw) if isinstance(ops_raw, str) else ops_raw
+        if not isinstance(ops, list):
+            ops = []
     except Exception:
         ops = []
 
     if ops:
         result = cad_batch(ops, state["drawing_path"], state["temp_output"], state.get("backend", "auto"))
         state["exec_result"] = result
+        all_ok = result.get("success", False)
     else:
-        state["exec_result"] = {"success": False, "message": "无法解析操作"}
+        # 无操作（如纯查询意图）→ 复制原图作为结果，视为成功
+        import shutil
+        shutil.copy(state["drawing_path"], state["temp_output"])
+        result = {"success": True, "results": [], "message": "只读任务，无绘图操作"}
+        state["exec_result"] = result
+        all_ok = True
 
     state["current_agent"] = "executor"
-    state["messages"].append({"agent": "Executor", "content": f"执行 {len(ops)} 个操作"})
+    state["messages"].append({
+        "agent": "Executor",
+        "content": f"执行 {len(ops)} 个操作，{'成功' if all_ok else '部分失败'}",
+    })
     state["handoff_count"] += 1
+
+    # 失败归因：规则判断（不依赖 LLM）
+    if not all_ok:
+        failed = [r for r in result.get("results", []) if not r.get("ok")]
+        failure_msg = "; ".join(r.get("msg", "") for r in failed)[:200]
+        state.setdefault("errors", []).append(f"执行失败: {failure_msg}")
 
     if state["handoff_count"] >= state["max_handoffs"]:
         return Command(goto="deliver", update=state)
-    return Command(goto=target.lower() if target else "validator", update=state)
+    return Command(goto="validator", update=state)
 
 
 def validator_node(state: SwarmState) -> Command:

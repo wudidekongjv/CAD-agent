@@ -1,0 +1,14 @@
+models/
+*.safetensors
+*.pth
+cadagent_data/
+outputs/
+uploads/
+drawings/
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+web/dist/
+.env
+.DS_Store

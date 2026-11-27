@@ -5,10 +5,8 @@ pydantic>=2.6.0
 python-multipart>=0.0.9
 requests>=2.31.0
 
-# Agent 编排
-langgraph>=0.0.60
-langchain-core>=0.2.0
-
+# Swarm 运行时（轻量，仅依赖 pydantic/requests，本地离线）
+# 核心为自研 swarm/ 包，无需 LangGraph/LangChain
 # MCP 协议
 mcp>=1.0.0
 

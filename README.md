@@ -4,7 +4,7 @@
 
 ## 界面
 
-![CAD Agent 施工图深化工作台](docs/images/frontend-preview.png)
+![CAD Agent 施工图深化工作台](https://raw.githubusercontent.com/wudidekongjv/CAD-agent/main/docs/images/frontend-preview-v2.png?t=20261127)
 
 空间计算风格：建筑摄影背景、深色毛玻璃悬浮面板、圆形图标导航。所有面板均为真实功能：工作台、任务管理、Agent 团队、MCP 工具目录、规范知识库、系统设置。
 

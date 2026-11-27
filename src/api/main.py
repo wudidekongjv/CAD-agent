@@ -513,12 +513,23 @@ async def model_providers(user=Depends(identity)):
 
 @app.post("/api/models/switch")
 async def model_switch(provider: str = Form(...), user=Depends(identity)):
-    """切换模型供应商"""
-    if user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
-    from swarm.llm import set_provider
+    """切换模型供应商
+
+    模型选择属于个人推理偏好（局域网工具），允许所有认证用户切换。
+    知识库重建等影响全局的操作仍限制管理员。
+    """
+    if provider not in ("deepseek", "openai", "qwen", "local"):
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+    from swarm.llm import set_provider, available_providers
+
+    # 校验密钥是否已配置（local 除外）
+    prov = next((p for p in available_providers() if p["name"] == provider), None)
+    if prov and not prov["available"]:
+        raise HTTPException(status_code=400, detail=f"{provider} 未配置 API 密钥")
+
     try:
         client = set_provider(provider)
+        # 广播给前端：当前会话使用新模型
         return {"success": True, **client.describe()}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -563,6 +574,28 @@ async def tools_detail(user=Depends(identity)):
             {"name": "offset_copy", "desc": "偏移复制", "params": ["filter", "distance"]},
         ],
     }
+
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str, user=Depends(identity)):
+    """删除任务记录（仅本人任务）"""
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT device_id FROM tasks WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if row["device_id"] != user["device_id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
+        conn.execute("DELETE FROM tasks WHERE task_id=?", (task_id,))
+
+    # 清理输出目录
+    import shutil
+    task_dir = OUTPUT_ROOT / user["role"] / user["user_id"] / task_id
+    if task_dir.exists():
+        shutil.rmtree(task_dir, ignore_errors=True)
+
+    return {"success": True, "task_id": task_id}
 
 
 # ============ CAD 元数据接口 ============

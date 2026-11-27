@@ -11,6 +11,9 @@ services:
     volumes:
       - ../cadagent_data:/app/cadagent_data
       - ../src:/app/src
+    # env_file 从项目根目录的 .env 读取 API 密钥（该文件不入库）
+    env_file:
+      - ../.env
     environment:
       - CADAGENT_HOME=/app/cadagent_data
       - CADAGENT_LAN=127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16

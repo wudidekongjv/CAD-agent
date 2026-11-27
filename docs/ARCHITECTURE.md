@@ -1,74 +1,62 @@
 # 架构设计
 
-## 为什么是多 Agent 而非单线 Pipeline
+## 为什么从固定流水线改为 Swarm
 
-判断依据是**任务是否需要动态决策与循环纠错**：
+固定流水线（Planner→Coder→Executor→Validator）的局限：
+- 节点顺序预设，只能通过有限的条件边选择分支
+- 校验失败时只能"回到 Planner"，无法区分失败性质
+- Agent 没有自主决策权，只是流水线的阶段
 
-| 维度 | 单线 Pipeline | 多 Agent 状态机 |
+Swarm 的核心改进：
+- **Handoff 作为协调原语**：每个 Agent 持有 `transfer_to_X` 工具，执行即跳出当前循环，由 Swarm 读取路由并切换 Agent
+- **运行时涌现拓扑**：Agent 根据当前情况自主决定移交目标，Validator 可针对参数问题交给 Coder、需求偏差交给 Planner、需人工交给 Reviewer
+- **轻量**：Agent + Tools + Handoffs 三原语，无需重型框架
+
+## Swarm 运行时五个原语
+
+1. **LLM 接口**：本地 Ollama 兼容客户端
+2. **工具注册表**：函数签名 + docstring 自动生成 JSON Schema
+3. **Agent 循环**：reason → tool_calls → observe → repeat，max_turns 防死循环
+4. **Handoff**：工具名以 `transfer_to_` 开头且返回目标 Agent，即切换控制权
+5. **Swarm**：读取 handoff，压缩历史为交接摘要，启动新 Agent 循环
+
+工具异常被封装成 error 字符串返回给模型，让 Agent 观察-重试而不是崩溃。失败是数据而非异常。
+
+## 安全护栏（代码强制）
+
+| 护栏 | 实现位置 | 行为 |
 |---|---|---|
-| 流程确定性 | 步骤固定、无分支 | 步骤依赖中间结果、有分支 |
-| 决策主体 | 人预设，机器只执行 | 机器需判断下一步 |
-| 错误处理 | 失败即报错/固定重试 | 失败需重新规划 |
+| 隐私门 | `config.validate_endpoint()` | 拒绝非 127.0.0.1/localhost/::1 的 LLM 地址 |
+| kill-switch | `config.check_kill_switch()` | 每次循环与文件操作前检查，文件存在即抛异常 |
+| 轮次上限 | `max_turns=12` / `max_handoffs=8` | 超限降级返回，不无限循环 |
+| 文件沙箱 | `config.check_path()` | 文件操作限定在 allowed_roots |
+| 执行隔离 | Executor Agent | 临时副本执行，校验通过才写回 |
 
-项目二属于后者：自然语言到 CAD 脚本存在歧义，一次生成容易误操作污染图纸，因此需要"规划→生成→执行→校验→失败重规划"的闭环。
-
-## StateGraph 状态设计
-
-State 记录任务推进的全部上下文：
-
-- `user_request` / `drawing_path` / `output_path`：输入与输出
-- `drawing_info`：图纸结构（图层、实体统计）
-- `plan`：Planner 输出的操作计划
-- `generated_ops` / `script`：Coder 生成的工具调用参数
-- `exec_result`：执行结果
-- `validation`：校验结论与错误清单
-- `retry_count`：重试次数（控制最多 3 次）
-- `messages`：全过程消息（追溯与人工交接）
-
-节点间通过**共享 State**通信，而非 Agent 之间对话。checkpointer 支持断点续跑与人工介入。
-
-## 工具层设计
-
-### 工具发现
-一次性把全部工具描述塞进 LLM 上下文会浪费大量 token。采用 `search_tools(query, pack)` 按需返回相关工具，Planner 只看当前任务需要的工具包。
-
-### 批处理
-早期方案一个操作一次工具往返，一张平面图可能需要几十次调用。`cad_batch` 一次传入操作列表，在同一份图纸上顺序执行，显著减少往返。
-
-### 垂直工具包
-- core：通用（drawing_info、cad_batch、undo_checkpoint）
-- arch：建筑（draw_wall、insert_opening、batch_dimension、layer_audit、room_boundary）
-- mech：构造（add_hatch、offset_copy）
-
-按场景启用，减少无关工具干扰。
+这些是代码中的强制检查，不是文档中的建议。
 
 ## 双后端抽象
 
 ```
 Agent → MCP 工具 → DrawingBackend 接口
-                      ├─ EzdxfBackend   （离线，纯 Python，无授权依赖）
-                      ├─ AutoCADComBackend（在线，Windows + AutoCAD）
-                      └─ AutoBackend    （自动探测 + 失败降级）
+                      ├─ EzdxfBackend      （离线，纯 Python，无授权依赖）
+                      ├─ AutoCADComBackend （在线，Windows + AutoCAD）
+                      └─ AutoBackend       （自动探测 + 失败降级）
 ```
 
-上层 Agent 只调用统一接口，不感知后端差异。这屏蔽了：
-- AutoCAD COM 的版本兼容（R2000–R2024 API 差异）
-- 授权问题（无 AutoCAD 时用 ezdxf）
-- 平台差异（ezdxf 跨平台，COM 仅 Windows）
+AutoBackend 优先尝试 COM，失败时自动降级 ezdxf；屏蔽 AutoCAD 版本兼容（R2000–R2024）、授权差异与平台差异。DWG 在离线模式下先转 DXF。
 
-DWG 文件在离线模式下先经 ODA File Converter 转 DXF。
+## 工具层设计
 
-## 安全执行
+- **工具发现**：`search_tools(query, pack)` 按需返回工具描述，避免一次性加载全部工具占用上下文
+- **批处理**：`cad_batch` 一次传入操作列表，在同一图纸上顺序执行，避免几十次工具往返
+- **垂直工具包**：core（通用）/ arch（建筑）/ mech（构造），按场景启用
+- **操作日志**：每次工具调用记录，支持 undo 检查点与任务审计
 
-1. 脚本在**临时副本**执行，绝不直接操作原图
-2. Validator 通过后才写回正式输出路径
-3. 规则校验：操作成功率、实体数量突变、图层规范
-4. 语义校验：LLM 判断执行结果是否符合用户意图
-5. 超过重试次数转人工，不强行交付错误结果
+## 离线运行
 
-## 操作日志与幂等
+默认 LLM 端点 `http://127.0.0.1:11434/v1`（Ollama 兼容格式）。所有推理、状态与文件均在本地：
+- 图纸不出内网
+- 提示词不发送第三方
+- 无外部 API 依赖
 
-每次 MCP 工具调用记录到操作日志（生产环境写 MySQL）：
-- 工具名、参数、后端、时间戳、成功状态
-- 支持 undo_checkpoint 回滚
-- 支持任务审计与问题复现
+如需切换到其他本地模型服务，设置 `SWARM_LLM_URL` 与 `SWARM_LLM_MODEL` 环境变量；隐私门仍会拒绝任何非本地地址。

@@ -565,6 +565,63 @@ async def tools_detail(user=Depends(identity)):
     }
 
 
+# ============ CAD 元数据接口 ============
+
+@app.get("/api/drawing/metadata/{task_id}")
+async def drawing_metadata(task_id: str, detail: str = "full", user=Depends(identity)):
+    """提取图纸元数据（细粒度+整体性）
+
+    detail=summary 返回脱敏摘要（可发 API）；detail=full 返回完整明细（本地）
+    """
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT drawing_path FROM tasks WHERE task_id=? AND device_id=?",
+            (task_id, user["device_id"]),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    from backend.metadata import extract_metadata
+    try:
+        return extract_metadata(row["drawing_path"], detail=detail)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/safety/status")
+async def safety_status(user=Depends(identity)):
+    """安全护栏状态（前端设置面板展示）"""
+    from swarm.guard import SafetyGate, ModelFallback, LoopGuard, DataValidator
+
+    return {
+        "safety_gate": {
+            "enabled": True,
+            "risk_levels": ["low", "medium", "high"],
+            "direct_original_edit_blocked": True,
+            "high_risk_needs_confirmation": True,
+        },
+        "model_fallback": {
+            "chain": ModelFallback.CHAIN,
+            "auto_fallback": True,
+        },
+        "data_validation": {
+            "op_param_check": True,
+            "metadata_diff": True,
+            "entity_delta_limit": 500,
+        },
+        "retry": {
+            "max_attempts": 3,
+            "exponential_backoff": True,
+        },
+        "loop_guard": {
+            "max_handoffs": 8,
+            "max_turns": 12,
+            "cycle_detection": True,
+            "duplicate_state_detection": True,
+        },
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

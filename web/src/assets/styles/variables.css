@@ -1,58 +1,53 @@
-/* CAD Agent 设计变量 —— 液态玻璃 + 工程蓝主调 */
+/* 深色毛玻璃设计系统 —— 空间计算风格 */
+
 :root {
-  /* 主色调 */
-  --primary: #2563eb;
-  --primary-light: rgba(147, 192, 236, 0.3);
-  --primary-dark: rgba(8, 46, 150, 0.2);
-  --accent: #0ea5e9;
-
-  /* 功能色 */
-  --success: #329329;
-  --warning: #ffc107;
-  --danger: #dc3545;
-  --info: rgb(6, 103, 246);
-
-  /* 背景（浅色玻璃底） */
-  --bg-start: #e8f0f8;
-  --bg-end: #d8e5f4;
-  --glass-white: rgba(255, 255, 255, 0.55);
-  --glass-blue: rgba(102, 154, 205, 0.18);
+  /* 毛玻璃层级 */
+  --glass-1: rgba(28, 32, 38, 0.42);
+  --glass-2: rgba(22, 26, 32, 0.58);
+  --glass-3: rgba(18, 22, 28, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.16);
+  --glass-highlight: rgba(255, 255, 255, 0.08);
+  --blur: blur(28px) saturate(140%);
 
   /* 文字 */
-  --text-main: #1e293b;
-  --text-secondary: #475569;
-  --text-tertiary: #94a3b8;
+  --text-primary: rgba(255, 255, 255, 0.96);
+  --text-secondary: rgba(255, 255, 255, 0.68);
+  --text-tertiary: rgba(255, 255, 255, 0.42);
 
-  /* 边框 */
-  --border: rgba(255, 255, 255, 0.7);
-  --border-selected: rgba(74, 121, 250, 0.7);
+  /* 强调色 */
+  --accent: #3b82f6;
+  --accent-glow: rgba(59, 130, 246, 0.45);
+  --success: #34d399;
+  --warning: #fbbf24;
 
   /* 圆角 */
-  --radius-lg: 24px;
-  --radius-md: 16px;
-  --radius-sm: 10px;
+  --r-xl: 32px;
+  --r-lg: 24px;
+  --r-md: 16px;
+  --r-sm: 10px;
+  --r-pill: 999px;
 
-  /* 阴影 / 玻璃效果 */
-  --glass-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.9),
-    inset 0 -1px 1px rgba(0, 0, 0, 0.04),
-    0 4px 16px rgba(30, 64, 175, 0.08);
+  /* 阴影 */
+  --shadow-float: 0 24px 64px rgba(0, 0, 0, 0.38), 0 8px 24px rgba(0, 0, 0, 0.22);
 }
 
-.glass-card {
-  background: var(--glass-white);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--glass-shadow);
+/* 毛玻璃基类 */
+.glass {
+  background: var(--glass-2);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-float), inset 0 1px 0 var(--glass-highlight);
 }
 
-.glass-card-strong {
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.85);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--glass-shadow), 0 12px 32px rgba(30, 64, 175, 0.12);
+.glass-light {
+  background: var(--glass-1);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-float), inset 0 1px 0 var(--glass-highlight);
 }
+
+/* 隐藏滚动条但保留滚动 */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

@@ -30,8 +30,21 @@ def _save(data: Dict) -> None:
 
 
 def _tokenize(text: str) -> List[str]:
-    """中英文混合分词（轻量）"""
-    tokens = re.findall(r"[\u4e00-\u9fa5]{2,}|[a-zA-Z_]+|\d+", text.lower())
+    """中英文混合分词（轻量）
+
+    中文用 2-gram 切分，保证"图层命名"能匹配"图层命名应采用"——
+    连续中文若整体成 token，短查询永远命不中长文档。
+    """
+    tokens = []
+    # 中文：提取连续中文串，再切 2-gram
+    for run in re.findall(r"[\u4e00-\u9fa5]+", text):
+        if len(run) == 1:
+            tokens.append(run)
+        else:
+            for i in range(len(run) - 1):
+                tokens.append(run[i:i + 2])
+    # 英文/数字/下划线
+    tokens.extend(re.findall(r"[a-zA-Z_]+|\d+", text.lower()))
     return tokens
 
 

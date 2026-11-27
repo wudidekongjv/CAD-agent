@@ -119,12 +119,25 @@ class EzdxfBackend(DrawingBackend):
         if kind == "set_layer":
             layer = op["layer"]
             props = op.get("props", {})
-            if layer not in doc.layers:
-                doc.layers.new(layer)
-            lay = doc.layers.get(layer)
-            for k, v in props.items():
-                setattr(lay.dxf, k, v)
-            count = 1
+
+            # 图层重命名：old_name → layer
+            old_name = op.get("old_name")
+            if old_name and old_name in doc.layers and old_name != layer:
+                lay = doc.layers.get(old_name)
+                lay.dxf.name = layer
+                # 同步更新所有实体的图层引用
+                for entity in msp:
+                    if entity.dxf.layer == old_name:
+                        entity.dxf.layer = layer
+                        count += 1
+                count = max(count, 1)
+            else:
+                if layer not in doc.layers:
+                    doc.layers.new(layer)
+                lay = doc.layers.get(layer)
+                for k, v in props.items():
+                    setattr(lay.dxf, k, v)
+                count = 1
 
         elif kind == "batch_modify":
             # 批量修改：按图层/类型筛选实体并改属性

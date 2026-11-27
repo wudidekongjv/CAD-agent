@@ -12,6 +12,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
+# 在类定义（默认值求值）之前加载 .env
+# 用轻量手动解析，零依赖——即使 python-dotenv 漏装也能工作
+_here = Path(__file__).resolve()
+for _candidate in (
+    Path.cwd() / ".env",
+    _here.parent.parent.parent / ".env",   # src/swarm/ → 项目根
+):
+    if _candidate.exists():
+        try:
+            for _line in _candidate.read_text(encoding="utf-8").splitlines():
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    os.environ.setdefault(_k.strip(), _v.strip())
+        except Exception:
+            pass
+        break
+
 
 @dataclass
 class SwarmConfig:

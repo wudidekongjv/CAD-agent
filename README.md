@@ -87,11 +87,15 @@ Validator 可针对失败性质移交不同 Agent——这是固定流水线做�
 ```bash
 git clone https://github.com/wudidekongjv/CAD-agent.git
 cd CAD-agent
-# 配置 API Key
-export DEEPSEEK_API_KEY=sk-xxx
+
+# 配置模型 API（交互式向导，或直接创建 .env）
+python scripts/setup_api.py
+
 cd docker && docker compose up -d
 # 局域网访问 http://<服务器IP>:5173
 ```
+
+未配置密钥也能启动，系统自动降级到规则引擎。配置详情见 [API_SETUP.md](docs/API_SETUP.md)。
 
 ## 技术栈
 

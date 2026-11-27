@@ -5,17 +5,24 @@ pydantic>=2.6.0
 python-multipart>=0.0.9
 requests>=2.31.0
 
-# Swarm 运行时（轻量，仅依赖 pydantic/requests，本地离线）
-# 核心为自研 swarm/ 包，无需 LangGraph/LangChain
+# LangGraph Swarm 编排
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# LLM API（OpenAI 兼容：DeepSeek / OpenAI / 通义）
+# 使用 requests 直接调用，无需额外 SDK
+
 # MCP 协议
 mcp>=1.0.0
 
 # CAD 引擎
 ezdxf>=1.1.0
-# pywin32>=306 ; sys_platform == "win32"   # AutoCAD COM 在线模式（Windows）
+# pywin32>=306 ; sys_platform == "win32"
+
+# 知识库文档解析
+pymupdf>=1.24.0
+python-docx>=1.1.0
 
 # 数据存储
 redis>=5.0.0
-
-# 工具
 python-dotenv>=1.0.0

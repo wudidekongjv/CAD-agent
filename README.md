@@ -1,116 +1,123 @@
 # CAD Agent · 施工图辅助深化
 
-> 基于 Swarm 多 Agent 架构的建筑 CAD 施工图深化系统。六个专职 Agent 通过 handoff 自主协作，全程本地离线运行，单张图纸标注与图层整理耗时由约 30 分钟降至 10 分钟以内。
+> LangGraph Swarm 多 Agent 架构的建筑 CAD 施工图深化系统。六个专职 Agent 通过 handoff 自主协作，规范知识库提供可溯源依据，单张图纸标注与图层整理耗时由约 30 分钟降至 10 分钟以内。
 
 ## 界面
 
 ![CAD Agent 施工图深化工作台](docs/images/frontend-preview.png)
 
-空间计算风格界面：建筑摄影背景、深色毛玻璃悬浮面板、圆形图标导航栏、消息式任务列表。
+空间计算风格：建筑摄影背景、深色毛玻璃悬浮面板、圆形图标导航。所有面板均为真实功能：工作台、任务管理、Agent 团队、MCP 工具目录、规范知识库、系统设置。
 
 ## 核心特性
 
-- **Swarm 架构**：Agent + Tools + Handoffs 三原语，Agent 自主决定把控制权移交给谁，拓扑运行时涌现而非预设
-- **六个专职 Agent**：Planner / Coder / Executor / Validator / Deliver / Reviewer，各自持有独立工具集
-- **全程本地离线**：本地 Ollama 兼容 LLM 端点，隐私门硬阻止非本地地址，图纸数据不出内网
-- **MCP 工具层**：工具发现（按需加载）、批处理（cad_batch）、垂直工具包（core/arch/mech）
-- **双后端抽象**：ezdxf（离线）与 AutoCAD COM（在线）统一接口，auto 模式自动探测与降级
-- **安全护栏**：kill-switch、轮次上限、文件系统沙箱、临时副本执行、校验通过才写回原图
+- **LangGraph Swarm**：StateGraph + `Command(goto=...)` 实现 Agent handoff，保留 LangGraph 的持久化与流式能力
+- **六个专职 Agent**：Planner / Coder / Executor / Validator / Deliver / Reviewer
+- **API 模型为主**：默认 DeepSeek-V3（OpenAI 兼容），可选 GPT-4o / qwen-max / 本地 Ollama；图纸几何原文不出网，仅结构摘要参与推理
+- **规范知识库**：PDF/DOCX/TXT 入库 → 语义分块 → 混合检索（向量+BM25+RRF）→ 为 Planner 与 Validator 提供依据
+- **MCP 工具层**：工具发现、批处理、垂直工具包
+- **双后端抽象**：ezdxf（离线）/ AutoCAD COM（在线）/ auto 自动探测降级
 
-## Swarm 协作流程
+## 协作流程
 
 ```
 用户任务 + DXF 图纸
         │
-        ▼
-   [Planner] 读取图纸 → 制定计划
-        │ transfer_to_Coder
-        ▼
-   [Coder] 计划 → MCP 工具调用参数
-        │ transfer_to_Executor
-        ▼
-   [Executor] 临时副本执行
-        │ transfer_to_Validator
-        ▼
-   [Validator] ─┬─ 通过 → [Deliver] 交付
-                ├─ 参数问题 → transfer_to_Coder 重生成
-                ├─ 需求偏差 → transfer_to_Planner 重规划
-                └─ 需人工 → transfer_to_Reviewer 复核
+   [Planner] ── 检索规范知识库 → 制定计划
+        │ handoff
+   [Coder] ── 生成 MCP 工具调用参数
+        │ handoff
+   [Executor] ── 临时副本执行
+        │ handoff
+   [Validator] ── 知识库规范校验 + 语义判断
+        ├─ 通过 → [Deliver] 交付
+        ├─ 参数问题 → [Coder]
+        ├─ 需求偏差 → [Planner]
+        └─ 需人工 → [Reviewer]
 ```
 
-**与固定流水线的区别**：固定流水线节点顺序预设，条件边只在有限分支中选择；Swarm 中每个 Agent 持有 `transfer_to_X` 工具，自主决定下一步交给谁，能处理"校验失败后不同性质的回退"。
+Validator 可针对失败性质移交不同 Agent——这是固定流水线做不到的，拓扑运行时涌现。
 
 ## Agent 团队
 
-| Agent | 职责 | 可移交目标 |
+| Agent | 职责 | 可移交 |
 |---|---|---|
-| Planner | 读取图纸结构、理解需求、制定计划 | Coder |
-| Coder | 计划转工具调用参数、检查参数完整性 | Executor / Planner |
-| Executor | 临时副本执行、失败归因 | Validator / Coder / Planner |
-| Validator | 规则校验 + 语义一致性 | Deliver / Coder / Planner / Reviewer |
-| Deliver | 汇总交付说明 | —（终点） |
+| Planner | 需求理解 + 规范检索 + 计划 | Coder / Reviewer |
+| Coder | 计划转工具调用参数 | Executor / Planner |
+| Executor | 临时副本执行 | Validator / Coder / Planner |
+| Validator | 知识库规范校验 | Deliver / Coder / Planner / Reviewer |
 | Reviewer | 人工复核协调 | Planner / Deliver |
+| Deliver | 汇总交付 | — |
 
-## MCP 工具包
+## 规范知识库
 
-| 包 | 工具 | 用途 |
-|---|---|---|
-| core | `drawing_info` / `cad_batch` / `undo_checkpoint` | 图纸读取 / 批量操作 / 回滚 |
-| arch | `draw_wall` / `insert_opening` / `batch_dimension` / `layer_audit` / `room_boundary` | 建筑深化 |
-| mech | `add_hatch` / `offset_copy` | 构造表达 |
+- **内置规范**：图层命名（ARCH_ 前缀）、标注样式（ARCH_DIM）、墙厚标准、门窗洞口、深化流程
+- **文档入库**：支持 PDF / DOCX / TXT / MD，按语义分块，向量化索引
+- **混合检索**：向量语义召回 + BM25 关键词召回 → RRF 融合
+- **可溯源**：每条规范带来源文件与章节，校验结果标注依据
 
-工具发现机制 `search_tools(query, pack)` 按需返回工具描述，避免全量工具占用上下文；批处理 `cad_batch` 一次调用完成多个原语。
+前端知识库面板支持：检索测试、来源浏览、文档上传入库。
 
-## 离线与安全
+## UI 功能一览
 
-| 机制 | 实现 |
+| 面板 | 功能 |
 |---|---|
-| 隐私门 | `config.validate_endpoint()` 拒绝非本地 LLM 地址 |
-| kill-switch | `.kill_switch` 文件存在即停止所有运行与文件操作 |
-| 轮次上限 | `max_turns=12` / `max_handoffs=8`，防止无限循环 |
-| 文件沙箱 | `allowed_roots` 限定 Agent 可访问的目录 |
-| 执行安全 | 临时副本执行，校验通过才写回原图 |
-| 多用户隔离 | 局域网 IP 白名单 + 设备指纹 + `outputs/{role}/{user_id}/{task_id}/` |
+| 工作台 | 任务输入、拖拽上传、四节点执行流、handoff 轨迹、结果预览下载 |
+| 任务 | 任务列表、状态筛选、搜索、打开历史、删除 |
+| Agent 团队 | 六个 Agent 职责与 handoff 关系可视化 |
+| MCP 工具 | 工具包筛选（core/arch/mech）、工具详情与参数 |
+| 知识库 | 规范检索、来源统计、文档上传入库 |
+| 设置 | 模型供应商切换、身份信息、系统状态 |
+| 右侧栏 | 任务搜索与快速切换 |
+
+## 模型配置
+
+默认 `deepseek-chat`（API）。支持：
+
+| 供应商 | 模型 | 环境变量 |
+|---|---|---|
+| deepseek | deepseek-chat | `DEEPSEEK_API_KEY` |
+| openai | gpt-4o | `OPENAI_API_KEY` |
+| qwen | qwen-max | `DASHSCOPE_API_KEY` |
+| local | qwen3-32b | `SWARM_LLM_URL` / `SWARM_LLM_MODEL` |
+
+**数据安全**：发送至 API 的只有图层名、实体统计等结构摘要，不含坐标与几何原文。设置面板可切换（管理员权限）。
 
 ## 快速开始
 
 ```bash
 git clone https://github.com/wudidekongjv/CAD-agent.git
 cd CAD-agent
+# 配置 API Key
+export DEEPSEEK_API_KEY=sk-xxx
 cd docker && docker compose up -d
 # 局域网访问 http://<服务器IP>:5173
 ```
-
-本地 LLM 默认 `http://127.0.0.1:11434/v1`（Ollama 兼容），可通过 `SWARM_LLM_URL` 与 `SWARM_LLM_MODEL` 配置。
 
 ## 技术栈
 
 | 层 | 技术 |
 |---|---|
-| Agent 编排 | 自研轻量 Swarm 运行时（Agent / Tools / Handoffs） |
-| LLM | 本地 Qwen3-32B（Ollama 兼容端点） |
+| Agent 编排 | LangGraph StateGraph + Command(goto) |
+| LLM | API（DeepSeek/GPT-4o/qwen-max）+ 本地 Ollama 备选 |
+| 知识库 | 向量 + BM25 + RRF（轻量实现） |
 | 工具协议 | MCP（FastMCP + stdio） |
 | 绘图引擎 | ezdxf / AutoCAD COM / auto |
 | 后端 | FastAPI + SQLite + Redis + SSE |
 | 前端 | Vue3 + Vite + 毛玻璃空间计算 UI |
-| 部署 | Docker Compose（局域网） |
+| 部署 | Docker Compose |
 
 ## 仓库结构
 
 ```
 ├── src/
-│   ├── swarm/
-│   │   ├── config.py      # 隐私门 / kill-switch / 沙箱 / 轮次上限
-│   │   ├── llm.py         # 本地 LLM 客户端
-│   │   ├── core.py        # Swarm 运行时（Agent 循环 + handoff）
-│   │   └── agents.py      # 六个 CAD Agent 定义
-│   ├── mcp/cad_mcp_server.py
-│   ├── backend/drawing_backend.py
-│   └── api/main.py
-├── web/                   # Vue3 毛玻璃前端
+│   ├── swarm/          # LangGraph Swarm 运行时 + 六 Agent
+│   ├── knowledge/      # 规范知识库（入库/检索/校验）
+│   ├── mcp/            # MCP 工具层
+│   ├── backend/        # 双后端抽象
+│   └── api/main.py     # FastAPI 接口（含知识库/模型/工具面板）
+├── web/src/            # Vue3 全功能前端
 ├── docker/
-├── docs/
-└── examples/
+└── docs/
 ```
 
 ## License
